@@ -634,36 +634,6 @@ def parse_videos(driver, channelID: str = None, videoID: str = None, comments: b
         video_parser(driver, video_link, x[1], comments)
 
 
-# def main():
-#     parser = argparse.ArgumentParser(
-#         description="YouTube scraper for playlists, channels, queries, and transcripts."
-#     )
-#
-#     parser.add_argument("--playlist", help="Scrape a playlist by URL")
-#     parser.add_argument("--query", help="Scrape search results by query URL")
-#     parser.add_argument("--channel", help="Scrape a channel by URL")
-#     parser.add_argument("--video", help="Scrape a single video transcript")
-#     parser.add_argument("--comments", help="Scrape comments for a video URL")
-#     parser.add_argument("--videos", action="store_true", help="Scrape all videos from a channel")
-#
-#     args = parser.parse_args()
-#
-#     if args.playlist:
-#         playlist_parser(driver=driver1, playlist_link=args.playlist)
-#     elif args.query:
-#         query_parser(driver=driver1, query_link=args.query)
-#     elif args.channel:
-#         channel_parser(driver=driver1, channel_link=args.channel)
-#     elif args.video:
-#         video_transcript_parser(video_link=args.video)
-#     elif args.comments:
-#         comment_parser(driver=driver1, video_link=args.comments)
-#     elif args.videos:
-#         parse_videos(driver=driver1)
-#     else:
-#         parser.print_help()
-
-
 def main():
     yt_link = input("Youtube link:").strip()
 
