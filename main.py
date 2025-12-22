@@ -1,22 +1,10 @@
 import json
-import os
-import threading
 import sqlite3
-import argparse
 import time
 
 import selenium.webdriver.remote.webelement
 from bs4 import BeautifulSoup
-from selenium.webdriver.support.wait import WebDriverWait
-from tzlocal import get_localzone
-from requests.adapters import HTTPAdapter, Retry
-from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.webdriver.support.wait import WebDriverWait
-from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 
 from selenium.webdriver.firefox.options import Options
@@ -636,7 +624,6 @@ def parse_videos(driver, channelID: str = None, videoID: str = None, comments: b
 
 def main():
     yt_link = input("Youtube link:").strip()
-
     if yt_link.startswith("https://www.youtube.com/playlist"):
         playlist_parser(driver=driver1, playlist_link=yt_link)
     elif yt_link.startswith("https://www.youtube.com/results?search_query"):
