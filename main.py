@@ -1,11 +1,14 @@
 import json
 import sqlite3
 import time
+import hashlib
 
 import selenium.webdriver.remote.webelement
 from bs4 import BeautifulSoup
 from selenium import webdriver
+from selenium.common import StaleElementReferenceException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
 
 from selenium.webdriver.firefox.options import Options
 
@@ -425,7 +428,150 @@ def comment_parser(driver, video_link):
         parse_comment(x, videoID)
 
 
-def video_parser(driver, video_link, channelID: str, comments: bool = False):
+def button_signature(btn):
+    """
+    Returns a stable-ish key for this 'Show more replies' button.
+    Prefers YouTube continuation params if present, otherwise hashes nearby HTML.
+    """
+    try:
+        # try obvious stable attributes
+        for attr in ("data-params", "data-continuation", "href", "aria-label"):
+            v = btn.get_attribute(attr)
+            if v:
+                return f"{attr}:{v}"
+
+        # fallback: hash outerHTML of a small ancestor block (continuation item)
+        anc = btn.find_element(By.XPATH, "ancestor::ytd-continuation-item-renderer[1]")
+        html = anc.get_attribute("outerHTML")[:2000]  # cap for speed
+        return "html:" + hashlib.sha1(html.encode("utf-8")).hexdigest()
+    except StaleElementReferenceException:
+        return None
+    except Exception:
+        # last-resort: hash the button itself
+        try:
+            html = btn.get_attribute("outerHTML")[:1000]
+            return "btn:" + hashlib.sha1(html.encode("utf-8")).hexdigest()
+        except Exception:
+            return None
+
+
+def scroll_and_click(driver, el):
+    try:
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});",
+            el
+        )
+        driver.execute_script("arguments[0].click();", el)
+        return True
+    except StaleElementReferenceException:
+        return False
+
+
+def comment_parser2(driver, video_link):
+    videoID = get_video_id(video_link)
+    video_link = f"https://www.youtube.com/watch?v={videoID}"
+    driver.get(video_link)
+    driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
+
+    prev_height = driver.execute_script("return document.documentElement.scrollHeight")  # Initial page height
+    last_check_time = time.time()
+    time.sleep(5)
+
+    sort_by_box = driver.find_element(By.CSS_SELECTOR, "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > div:nth-child(1) > tp-yt-paper-button:nth-child(1) > div:nth-child(2)")
+
+    suggested_videos = driver.find_element(By.XPATH, "//div[@id='secondary-inner' and @class='style-scope "
+                                                     "ytd-watch-flexy']")
+    scroll_and_click(driver, sort_by_box)
+
+    time.sleep(3)
+    sort_by_new_option = driver.find_element(By.XPATH, "/html/body/ytd-app/div[1]/ytd-page-manager/ytd-watch-flexy/div[4]/div[1]/div/div[2]/ytd-comments/ytd-item-section-renderer/div[1]/ytd-comments-header-renderer/div[1]/div[2]/span/yt-sort-filter-sub-menu-renderer/yt-dropdown-menu/tp-yt-paper-menu-button/tp-yt-iron-dropdown/div/div/tp-yt-paper-listbox/a[2]/tp-yt-paper-item")
+    scroll_and_click(driver, sort_by_new_option)
+    time.sleep(3)
+    driver.execute_script("arguments[0].remove();", suggested_videos)
+
+    while True:
+
+        def spinnerwait():
+            while True:
+                time.sleep(1)
+                # spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner[@id='spinner']")
+                spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner[@id='spinner']")
+                visible_spinners = []
+
+                for x in spinners:
+                    try:
+                        aria_hidden = x.get_attribute("aria-hidden")
+                        aria_label = x.get_attribute("aria-label")
+                    except StaleElementReferenceException:
+                        continue
+
+                    if aria_hidden == "true" or aria_label == "loading": continue
+
+                    visible_spinners.append(x)
+
+                # print(spinners[0].get_attribute('outerHTML'))
+                print(f"waiting on spinners {len(spinners)}")
+                if len(visible_spinners) == 0: break
+
+        e_button_count = 1
+        m_button_count = 1
+
+        spinnerwait()
+
+        while e_button_count > 0 or m_button_count > 0:
+            expand_buttons = driver.find_elements(By.XPATH, "//ytd-button-renderer[@id='more-replies-sub-thread']")
+            actual_expand_buttons = []
+            for x in expand_buttons:
+                if not x.is_displayed(): continue
+                actual_expand_buttons.append(x)
+                print("normal expand button")
+                print(x.get_attribute('outerHTML'))
+                # driver.execute_script("arguments[0].click();", x)
+                scroll_and_click(driver=driver, el=x)
+            # expand the comment replies button
+            # ytd-button-renderer
+            more_expand_buttons = driver.find_elements(By.CSS_SELECTOR, "ytd-continuation-item-renderer.replies-continuation button[aria-label='Show more replies']")
+            actual_more_expand_buttons = []
+            for x in more_expand_buttons:
+                if not x.is_displayed(): continue
+                actual_more_expand_buttons.append(x)
+                print("more expand button")
+                print(x.get_attribute('outerHTML'))
+                # driver.execute_script("arguments[0].click();", x)
+                scroll_and_click(driver=driver, el=x)
+            e_button_count = len(actual_expand_buttons)
+            m_button_count = len(actual_more_expand_buttons)
+
+            if len(actual_expand_buttons) != 0 or len(actual_more_expand_buttons) != 0:
+                spinnerwait()
+
+        # Scroll down continuously
+        driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
+        print("Scrolling down.")
+        spinnerwait()
+
+        # Check every 60 seconds if page height has increased
+        if e_button_count == 0 and m_button_count == 0: print("No extra comment buttons found")
+        if time.time() - last_check_time >= 15:
+            new_height = driver.execute_script("return document.documentElement.scrollHeight")
+            print(f"{new_height} != {prev_height} and {e_button_count} != 0 and {m_button_count}")
+            if (new_height > prev_height) or (e_button_count != 0 and m_button_count != 0):
+                prev_height = new_height  # Update stored height
+            else:
+                # print(f"{new_height} {prev_height}")
+                break
+            last_check_time = time.time()
+
+    comments = driver.find_elements(By.XPATH,
+                                    "//div[@id='body' and contains(@class, 'style-scope ytd-comment-view-model')]")
+    print(f"Found {len(comments)} comments")
+    for x in comments:
+        parse_comment(x, videoID)
+    crsr.execute("UPDATE video SET scraped = 1 - scraped WHERE videoID = ?", (videoID,))
+    conn.commit()
+
+
+def video_parser(driver, video_link, channelID: str = None, comments: bool = False):
     videoID = get_video_id(video_link)
     video_link = f"https://www.youtube.com/watch?v={videoID}"
     driver.get(video_link)
@@ -466,7 +612,7 @@ def video_parser(driver, video_link, channelID: str, comments: bool = False):
         crsr.execute("UPDATE video SET scraped = 1 WHERE videoID =?;", (videoID,))
         crsr.execute("UPDATE video SET transcript = 0 WHERE videoID =?;", (videoID,))
         conn.commit()
-        return
+
     time.sleep(5)
 
     page_source = driver.page_source
@@ -485,6 +631,7 @@ def video_parser(driver, video_link, channelID: str, comments: bool = False):
         if len(segment_containers) == 0:
             print("No transcript was loaded. Quitting.")
             quit()
+
     for x in segment_containers:
 
         # ---- snippet timestamp ----
@@ -520,6 +667,9 @@ def video_parser(driver, video_link, channelID: str, comments: bool = False):
             (videoID, channelID, snippet_text, seconds_start_time, timestamp_text))
 
     conn.commit()
+
+    # -------  Comment Scraping  ------- #
+
     if not comments: return
 
     # removing suggested videos, the loading of suggested videos
@@ -528,25 +678,60 @@ def video_parser(driver, video_link, channelID: str, comments: bool = False):
                                                      "ytd-watch-flexy']")
     driver.execute_script("arguments[0].remove();", suggested_videos)
     while True:
+        # reformat algorithm:
+        # press all expansion buttons
+        # wait 2 seconds
+        # press all expansion buttons, repeat this and 2 previous lines until there are no more expansion buttons
+        # scroll down once
+        # wait 3 seconds
+        # repeat all above lines unless the page size did not change
+        # break
+
+        def spinnerwait():
+            while True:
+                time.sleep(1)
+                # spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner[@id='spinner']")
+                spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner")
+                print(f"waiting on spinners {len(spinners)}")
+                if len(spinners) == 0: break
+
+        e_button_count = 1
+        m_button_count = 1
+
+        spinnerwait()
+
+        while e_button_count > 0 and m_button_count > 0:
+            expand_buttons = driver.find_elements(By.XPATH, "//ytd-button-renderer[@id='more-replies']")
+            for x in expand_buttons:
+                driver.execute_script("arguments[0].click();", x)
+            # expand the comment replies button
+
+            more_expand_buttons = driver.find_elements(By.XPATH, "//ytd-button-renderer[@class='arrow style-scope "
+                                                                 "ytd-continuation-item-renderer']")
+            for x in more_expand_buttons: driver.execute_script("arguments[0].click();", x)
+            e_button_count = len(expand_buttons)
+            m_button_count = len(more_expand_buttons)
+
+            if len(expand_buttons) != 0 and len(more_expand_buttons) != 0:
+                spinnerwait()
+
+        # <div class="circle-clipper left style-scope tp-yt-paper-spinner">
+        #       <div class="circle style-scope tp-yt-paper-spinner"></div>
+        #     </div>
+        #
+        # <ytd-continuation-item-renderer class="style-scope ytd-item-section-renderer" is-watch-page="" is-comments-section=""><!--css-build:shady--><!--css_build_scope:ytd-continuation-item-renderer--><!--css_build_styles:video.youtube.src.web.polymer.shared.ui.styles.yt_base_styles.yt.base.styles.css.js--><div id="ghost-cards" class="style-scope ytd-continuation-item-renderer"></div>
+        # <tp-yt-paper-spinner id="spinner" class="style-scope ytd-continuation-item-renderer" aria-label="loading" active=""><!--css-build:shady--><!--css_build_scope:tp-yt-paper-spinner--><!--css_build_styles:video.youtube.src.web.polymer.shared.ui.styles.yt_base_styles.yt.base.styles.css.js,third_party.javascript.youtube_components.tp_yt_paper_spinner.tp.yt.paper.spinner.css.js--><div id="spinnerContainer" class="active  style-scope tp-yt-paper-spinner">
+        #
+
+        # comment loading spinner
+        # <tp-yt-paper-spinner id="spinner" class="style-scope ytd-continuation-item-renderer" aria-label="loading" active="">
+
+
         # Scroll down continuously
         driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
-        time.sleep(1)
-        driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
-        time.sleep(4)  # Short pause to allow content to load
+        print("Scrolling down.")
+        spinnerwait()
 
-        expand_buttons = driver.find_elements(By.XPATH, "//ytd-button-renderer[@id='more-replies']")
-        for x in expand_buttons:
-            driver.execute_script("arguments[0].click();", x)
-        # expand the comment replies button
-
-        more_expand_buttons = driver.find_elements(By.XPATH, "//ytd-button-renderer[@class='arrow style-scope "
-                                                             "ytd-continuation-item-renderer']")
-        for x in more_expand_buttons: driver.execute_script("arguments[0].click();", x)
-
-        # place for likes
-        # <span id="vote-count-middle" class="style-scope ytd-comment-engagement-bar">2</span>
-        e_button_count = len(expand_buttons)
-        m_button_count = len(more_expand_buttons)
         # Check every 60 seconds if page height has increased
         if e_button_count == 0 and m_button_count == 0: print("No extra comment buttons found")
         if time.time() - last_check_time >= 15:
@@ -626,6 +811,8 @@ def main():
     yt_link = input("Youtube link:").strip()
     if yt_link.startswith("https://www.youtube.com/playlist"):
         playlist_parser(driver=driver1, playlist_link=yt_link)
+    elif yt_link.startswith("hhttps://www.youtube.com/watch?v="):
+        video_parser(driver=driver1, video_link=yt_link, comments=True)
     elif yt_link.startswith("https://www.youtube.com/results?search_query"):
         query_parser(driver=driver1, query_link=yt_link)
     elif yt_link.startswith("https://www.youtube.com/channel/"):
@@ -635,7 +822,7 @@ def main():
     elif yt_link.startswith("https://www.youtube.com/watch?v="):
         video_transcript_parser(video_link=yt_link)
     elif yt_link.startswith("chttps://www.youtube.com/watch?v="):
-        comment_parser(driver=driver1, video_link=yt_link[1:])
+        comment_parser2(driver=driver1, video_link=yt_link[1:])
     elif yt_link.startswith("chhttps://www.youtube.com/channel/"):
         channelID = yt_link.replace("chhttps://www.youtube.com/channel/", "")
         parse_videos(driver=driver1, channelID=channelID)
