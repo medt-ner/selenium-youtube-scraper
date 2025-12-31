@@ -1,7 +1,6 @@
 import json
 import sqlite3
 import time
-import hashlib
 import argparse
 import logging
 
@@ -10,13 +9,10 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.common import StaleElementReferenceException
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
 
 from selenium.webdriver.firefox.options import Options
 
 from urllib.parse import urlparse, parse_qs
-
-from selenium.webdriver.support.wait import WebDriverWait
 
 ff_options = Options()
 ff_options.page_load_strategy = 'eager'
@@ -28,7 +24,9 @@ driver1.delete_all_cookies()
 with open('config.json', 'r') as files:
     config = json.load(files)
 
+# optionally use ublock origin
 driver1.install_addon(path=config["ublock-origin-path"])
+# just comment this out if you need to
 
 conn = sqlite3.connect("ytv.db")
 crsr = conn.cursor()
@@ -48,8 +46,8 @@ transcript BOOL,
 FOREIGN KEY (channelID) REFERENCES channel(channelID) ON DELETE CASCADE
 );"""
 
-# the maximum size for a transcript snippet seems to be undetermined
-# I pasted in probably 100k 3 byte characters, and it let me save the video transcript
+# I have no idea how large a transcript snippet's text can be.
+# I pasted in probably 100k 3 byte characters, and it let me save the video transcript.
 snippet_table_creation_command = """CREATE TABLE IF NOT EXISTS snippet (
 videoID CHAR(11),
 channelID CHAR(24),
@@ -82,10 +80,43 @@ conn.execute(snippet_table_creation_command)
 conn.execute(comment_table_creation_command)
 
 
+def setup_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+
+def scroll_and_click(driver, el):
+    """
+    Scrolls driver to the element 'el' and clicks on it.
+    """
+    try:
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});",
+            el
+        )
+        driver.execute_script("""
+                        const el = arguments[0];
+                        el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
+                    """, el)
+        return True
+    except StaleElementReferenceException:
+        return False
+
+
+def get_video_id(video_link):
+    if video_link.endswith("/"): video_link = video_link[:-1]
+    if "&" in video_link: video_link, unimportant = video_link.split("&", 1)
+    if len(video_link) == 11: return video_link
+    if "/shorts/" in video_link:
+        unimportant, vid_id = video_link.rsplit("/", 1)
+    else:
+        unimportant, vid_id = video_link.split("ch?v=", 1)
+    return vid_id
+
+
 def channel_parser(driver, channel_link):
     channel_video_type_parser(driver, channel_link, "/videos")
     channel_video_type_parser(driver, channel_link, "/streams")
-    main()
 
 
 def channel_video_type_parser(driver, channel_link, ctype):
@@ -245,38 +276,56 @@ def channel_video_type_parser(driver, channel_link, ctype):
     conn.commit()
 
 
-def query_parser(driver, query_link):
-    try:
-        goal_int = int(input("Enter a number of videos to save:"))
-        driver.get(query_link)
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-        content_container = []
-        count = 0
-        while True:
-            print(f"Iterating {len(content_container)}")
+def query_parser(driver, query_link, depth: int):
 
-            # driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-            driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
-            time.sleep(5)
-            page_source = driver.page_source
+    goal_int = depth
+    driver.get(query_link)
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+    content_container = []
+    count = 0
+    while True:
+        print(f"Iterating {len(content_container)}")
 
-            # Parse the page source with BeautifulSoup
-            soup = BeautifulSoup(page_source, 'html.parser')
+        # driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+        driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
+        time.sleep(5)
+        page_source = driver.page_source
 
-            content_container = soup.find_all('ytd-video-renderer', class_="style-scope ytd-item-section-renderer")
+        # Parse the page source with BeautifulSoup
+        soup = BeautifulSoup(page_source, 'html.parser')
 
-            # look for video titles, links, author
-            # pre-installing ublock filters would be helpful
+        content_container = soup.find_all('ytd-video-renderer', class_="style-scope ytd-item-section-renderer")
 
-            current_content = len(content_container)
-            if current_content >= goal_int and count > 0: break
-            count += 1
+        # look for video titles, links, author
+        # pre-installing ublock filters would be helpful
 
-        for x in content_container:
-            title = x.find("a", id="video-title")
-            print(title.text.strip())
-    except Exception as e:
-        print(e)
+        current_content = len(content_container)
+        if current_content >= goal_int and count > 0: break
+        count += 1
+
+    results = driver.find_elements(By.XPATH, "//ytd-video-renderer")
+    first = True
+    videos = []
+    for x in results:
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});",
+            x
+        )
+        if first:
+            time.sleep(2)
+            first = False
+        else: time.sleep(0.08)
+        # title = x.find("a", id="video-title")
+        title = x.find_element(By.XPATH, ".//a[@id='video-title']")
+        print(title.text.strip())
+
+        # thumbnail = x.find("a", id="thumbnail")
+        thumbnail = x.find_element(By.XPATH, ".//a[@id='thumbnail']")
+        print(thumbnail.get_attribute("href"))
+        videos.append(get_video_id(thumbnail.get_attribute("href")))
+
+    for x in videos:
+        video_parser(driver, x)
 
 
 def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, videoID: str, videoChannelID: str = None):
@@ -382,30 +431,14 @@ def playlist_parser(driver, playlist_link):
             initial_content = current_content
             count += 1
 
-        for x in content_container: print(x['href'])
-        # collects at most 100 hrefs from a playlist, need to scroll down repeatedly to get more
-        # after every scroll, check if the number of hrefs increased, if so, scroll again. Wait 5 seconds, repeat.
+        for x in content_container:
+            if 'href' not in x: continue
+            link = x['href']
+            if len(link) < 11: continue
+            video_parser(driver, video_link=get_video_id(link))
 
     except Exception as e:
         print(e)
-
-
-def scroll_and_click(driver, el):
-    """
-    Scrolls driver to the element 'el' and clicks on it.
-    """
-    try:
-        driver.execute_script(
-            "arguments[0].scrollIntoView({block:'center'});",
-            el
-        )
-        driver.execute_script("""
-                        const el = arguments[0];
-                        el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}));
-                    """, el)
-        return True
-    except StaleElementReferenceException:
-        return False
 
 
 def comment_parser(driver, video_link):
@@ -582,8 +615,7 @@ def video_parser(driver, video_link, channelID: str = None, comments: bool = Fal
         segment_containers = soup.find_all('ytd-transcript-segment-renderer',
                                            class_="ytd-transcript-segment-list-renderer")
         if len(segment_containers) == 0:
-            print("No transcript was loaded. Quitting.")
-            quit()
+            print("No transcript was loaded.")
 
     for x in segment_containers:
 
@@ -625,10 +657,30 @@ def video_parser(driver, video_link, channelID: str = None, comments: bool = Fal
 
     if not comments: return
 
-    # removing suggested videos, the loading of suggested videos
-    # sometimes stops the loading of more comments
+    prev_height = driver.execute_script("return document.documentElement.scrollHeight")  # Initial page height
+    last_check_time = time.time()
+    time.sleep(3)
+    video_block = driver.find_element(By.XPATH, "//div[@id='player']")
+    driver.execute_script("arguments[0].remove();", video_block)
+    time.sleep(3)
+    try:
+        sort_by_box = driver.find_element(By.CSS_SELECTOR,
+                                          "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > div:nth-child(1) > tp-yt-paper-button:nth-child(1)")
+    except selenium.common.exceptions.NoSuchElementException:
+        time.sleep(5)
+
+        sort_by_box = driver.find_element(By.CSS_SELECTOR,
+                                          "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > div:nth-child(1) > tp-yt-paper-button:nth-child(1)")
+
     suggested_videos = driver.find_element(By.XPATH, "//div[@id='secondary-inner' and @class='style-scope "
                                                      "ytd-watch-flexy']")
+
+    scroll_and_click(driver, sort_by_box)
+    time.sleep(3)
+    sort_by_new_option = driver.find_element(By.CSS_SELECTOR,
+                                             "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > tp-yt-iron-dropdown:nth-child(2) > div:nth-child(1) > div:nth-child(1) > tp-yt-paper-listbox:nth-child(1) > a:nth-child(2) > tp-yt-paper-item:nth-child(1)")
+    scroll_and_click(driver, sort_by_new_option)
+    time.sleep(3)
     driver.execute_script("arguments[0].remove();", suggested_videos)
     while True:
 
@@ -636,28 +688,54 @@ def video_parser(driver, video_link, channelID: str = None, comments: bool = Fal
             while True:
                 time.sleep(1)
                 # spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner[@id='spinner']")
-                spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner")
+                spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner[@id='spinner']")
+                visible_spinners = []
+
+                for spinner in spinners:
+                    try:
+                        aria_hidden = spinner.get_attribute("aria-hidden")
+                        aria_label = spinner.get_attribute("aria-label")
+                    except StaleElementReferenceException:
+                        continue
+
+                    if aria_hidden == "true" or aria_label == "loading": continue
+
+                    visible_spinners.append(spinner)
+
+                # print(spinners[0].get_attribute('outerHTML'))
                 print(f"waiting on spinners {len(spinners)}")
-                if len(spinners) == 0: break
+                if len(visible_spinners) == 0: break
 
         e_button_count = 1
         m_button_count = 1
 
         spinnerwait()
 
-        while e_button_count > 0 and m_button_count > 0:
-            expand_buttons = driver.find_elements(By.XPATH, "//ytd-button-renderer[@id='more-replies']")
-            for x in expand_buttons:
-                driver.execute_script("arguments[0].click();", x)
+        def process_buttons(buttons: list):
+            good_buttons = []
+            for button in buttons:
+                if not button.is_displayed(): continue
+                good_buttons.append(button)
+                # print(button.get_attribute('outerHTML'))
+                scroll_and_click(driver=driver, el=button)
+                driver.execute_script("arguments[0].remove();", button)
+            return good_buttons
+
+        # Loading comment replies loop
+        while e_button_count > 0 or m_button_count > 0:
+            expand_buttons = driver.find_elements(By.XPATH, "//ytd-button-renderer[@id='more-replies-sub-thread']")
+            actual_expand_buttons = process_buttons(expand_buttons)
+
             # expand the comment replies button
+            # ytd-button-renderer
+            more_expand_buttons = driver.find_elements(By.CSS_SELECTOR,
+                                                       "ytd-continuation-item-renderer.replies-continuation button[aria-label='Show more replies']")
+            actual_more_expand_buttons = process_buttons(more_expand_buttons)
 
-            more_expand_buttons = driver.find_elements(By.XPATH, "//ytd-button-renderer[@class='arrow style-scope "
-                                                                 "ytd-continuation-item-renderer']")
-            for x in more_expand_buttons: driver.execute_script("arguments[0].click();", x)
-            e_button_count = len(expand_buttons)
-            m_button_count = len(more_expand_buttons)
+            e_button_count = len(actual_expand_buttons)
+            m_button_count = len(actual_more_expand_buttons)
 
-            if len(expand_buttons) != 0 and len(more_expand_buttons) != 0:
+            if e_button_count != 0 or m_button_count != 0:
                 spinnerwait()
 
         # Scroll down continuously
@@ -676,25 +754,18 @@ def video_parser(driver, video_link, channelID: str = None, comments: bool = Fal
                 # print(f"{new_height} {prev_height}")
                 break
             last_check_time = time.time()
-        driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
 
     comments = driver.find_elements(By.XPATH,
                                     "//div[@id='body' and contains(@class, 'style-scope ytd-comment-view-model')]")
     print(f"Found {len(comments)} comments")
+    comment_ids = set()
     for x in comments:
-        parse_comment(x, videoID, channelID)
+        result = parse_comment(x, videoID)
+        if result: comment_ids.add(result)
+
+    print(f"Better estimate of comments: {len(comment_ids)}")
     crsr.execute("UPDATE video SET scraped = 1 - scraped WHERE videoID = ?", (videoID,))
     conn.commit()
-
-
-def get_video_id(video_link):
-    if video_link.endswith("/"): video_link = video_link[:-1]
-    if "/shorts/" in video_link:
-        unimportant, vid_id = video_link.rsplit("/", 1)
-    else:
-        unimportant, vid_id = video_link.rsplit("watch?v=", 1)
-    if "&" in vid_id: vid_id, unimportant = vid_id.rsplit("&", 1)
-    return vid_id
 
 
 def video_transcript_parser(video_link):
@@ -775,11 +846,6 @@ class YoutubeLink:
         self.type = "unknown"
 
 
-def setup_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(level=level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="main",
                                      description="A slow youtube scraper.")
@@ -801,7 +867,7 @@ def build_argparser() -> argparse.ArgumentParser:
 
     search = sub.add_parser(name="search", help="Tries to scrape a youtube search query results page.")
     search.add_argument("query", help="The Youtube search query URL.")
-    search.add_argument("max-depth", default=100,
+    search.add_argument("max-depth", default=100, type=int,
                         help="The maximum number of videos to scrape from the search results page.")
 
     channel = sub.add_parser(name="channel", help="Tries to scrape a channel's videos.")
@@ -823,10 +889,13 @@ def main(argsraw: list[str] | None = None) -> int:
             if yt_link.type == "video":
                 video_parser(driver=driver1, video_link=yt_link.text)
             elif yt_link.type == "search":
-                query_parser(driver=driver1, query_link=yt_link.text)
+                query_parser(driver=driver1, query_link=yt_link.text, depth=100)
             elif yt_link.type == "channel":
                 channel_parser(driver=driver1, channel_link=yt_link.text)
             elif yt_link.type == "playlist":
+                if "&sp=" in yt_link.text:
+                    print("Advanced queries are not implemented yet.")
+                    return 2
                 playlist_parser(driver=driver1, playlist_link=yt_link.text)
             else:
                 print("Couldn't recognize the link.")
@@ -837,9 +906,12 @@ def main(argsraw: list[str] | None = None) -> int:
             elif args.subcommand == "transcript":
                 video_transcript_parser(video_link=args.url)
             elif args.subcommand == "playlist":
+                if "&sp=" in args.url:
+                    print("Advanced queries are not implemented yet.")
+                    return 2
                 playlist_parser(driver1, playlist_link=args.url)
             elif args.subcommand == "search":
-                query_parser(driver1, query_link=args.url)
+                query_parser(driver1, query_link=args.url, depth=args.max_depth)
             elif args.subcommand == "channel":
                 channel_parser(driver1, channel_link=args.url)
             else:
