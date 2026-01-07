@@ -66,6 +66,7 @@ videochannelID CHAR(24),
 videoID CHAR(11),
 text TEXT,
 user_handle TEXT,
+date TEXT,
 likes INTEGER,
 creator_heart BOOL,
 PRIMARY KEY (commentID),
@@ -335,7 +336,7 @@ def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, vide
                                               ".//a[contains(@class, 'yt-simple-endpoint style-scope "
                                               "ytd-comment-view-model')]")
     href = curre_comment.get_attribute('href')
-
+    date = curre_comment.text
     if not href:
         print(comment)
         print("No href in comment?")
@@ -397,9 +398,9 @@ def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, vide
     if inner_html: creator_heart = True
     print(commentID, parentID, comment_text, handle, comment_likes, creator_heart)
     crsr.execute(
-        "INSERT OR REPLACE INTO comment (commentID, parentID, videochannelID, videoID, text, user_handle, likes, "
-        "creator_heart) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (commentID, parentID, videoChannelID, videoID, comment_text, handle, comment_likes, creator_heart))
+        "INSERT OR REPLACE INTO comment (commentID, parentID, videochannelID, videoID, text, user_handle, date, likes, "
+        "creator_heart) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (commentID, parentID, videoChannelID, videoID, comment_text, handle, date, comment_likes, creator_heart))
     conn.commit()
     return commentID
 
