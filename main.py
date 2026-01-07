@@ -337,12 +337,13 @@ def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, vide
                                               "ytd-comment-view-model')]")
     href = curre_comment.get_attribute('href')
     date = curre_comment.text
-    if not href:
+
+    if not date or not href:
         print(comment)
-        print("No href in comment?")
+        print("No href or date in comment?")
         quit()
     if "lc=" not in href:
-        print("wacky comment href")
+        print("Weird comment href")
         print(href)
         quit()
 
@@ -354,6 +355,9 @@ def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, vide
         parentID, commentID = href.rsplit(".", 1)
     else:
         commentID = href
+
+    avatar = comment.find_element(By.XPATH, ".//img[contains(@id, 'img') and contains(@class, 'style-scope yt-img-shadow')]")
+    avatar_url = avatar.get_attribute("src")
 
     # Locating commenter handle
     curr_comment = comment.find_element(By.XPATH, ".//a[contains(@id, 'author-text') and contains(@class, "
