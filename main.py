@@ -67,6 +67,7 @@ videoID CHAR(11),
 text TEXT,
 user_handle TEXT,
 date TEXT,
+avatar TEXT,
 likes INTEGER,
 creator_heart BOOL,
 PRIMARY KEY (commentID),
@@ -330,7 +331,13 @@ def query_parser(driver, query_link, depth: int):
 
 
 def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, videoID: str, videoChannelID: str = None):
-    # Locating comment ID
+    """
+    Commits a YouTube comment to the currently loaded database.
+    :param comment: Selenium web object containing the entire comment.
+    :param videoID: ID of the Video which the comment in under.
+    :param videoChannelID: The ID of the account which uploaded the video.
+    :return:
+    """
     curr_comment = comment.find_element(By.XPATH, ".//span[contains(@id, 'published-time-text')]")
     curre_comment = curr_comment.find_element(By.XPATH,
                                               ".//a[contains(@class, 'yt-simple-endpoint style-scope "
@@ -356,8 +363,10 @@ def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, vide
     else:
         commentID = href
 
-    avatar = comment.find_element(By.XPATH, ".//img[contains(@id, 'img') and contains(@class, 'style-scope yt-img-shadow')]")
-    avatar_url = avatar.get_attribute("src")
+    avatar = comment.find_element(By.XPATH, ".//yt-img-shadow[contains(@class, 'style-scope ytd-comment-view-model no-transition')]")
+    avatar_foot = avatar.find_element(By.XPATH,
+                                      ".//img[contains(@id, 'img') and contains(@class, 'style-scope yt-img-shadow')]")
+    avatar_url = avatar_foot.get_attribute("src")
 
     # Locating commenter handle
     curr_comment = comment.find_element(By.XPATH, ".//a[contains(@id, 'author-text') and contains(@class, "
@@ -402,9 +411,9 @@ def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, vide
     if inner_html: creator_heart = True
     print(commentID, parentID, comment_text, handle, comment_likes, creator_heart)
     crsr.execute(
-        "INSERT OR REPLACE INTO comment (commentID, parentID, videochannelID, videoID, text, user_handle, date, likes, "
-        "creator_heart) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (commentID, parentID, videoChannelID, videoID, comment_text, handle, date, comment_likes, creator_heart))
+        "INSERT OR REPLACE INTO comment (commentID, parentID, videochannelID, videoID, text, user_handle, date, avatar, likes, "
+        "creator_heart) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (commentID, parentID, videoChannelID, videoID, comment_text, handle, date, avatar_url, comment_likes, creator_heart))
     conn.commit()
     return commentID
 
