@@ -7,7 +7,7 @@ import logging
 import selenium.webdriver.remote.webelement
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.common import StaleElementReferenceException
+from selenium.common import StaleElementReferenceException, NoSuchElementException
 from selenium.webdriver.common.by import By
 
 from selenium.webdriver.firefox.options import Options
@@ -15,7 +15,9 @@ from selenium.webdriver.firefox.options import Options
 from urllib.parse import urlparse, parse_qs
 
 ff_options = Options()
-ff_options.page_load_strategy = 'eager'
+ff_options.set_preference("gfx.webrender.all", False)
+ff_options.set_preference("media.autoplay.default", 5)
+# ff_options.page_load_strategy = 'eager'
 # ff_options.add_argument('--headless')
 
 driver1 = webdriver.Firefox(options=ff_options)
@@ -279,7 +281,6 @@ def channel_video_type_parser(driver, channel_link, ctype):
 
 
 def query_parser(driver, query_link, depth: int):
-
     goal_int = depth
     driver.get(query_link)
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
@@ -316,7 +317,8 @@ def query_parser(driver, query_link, depth: int):
         if first:
             time.sleep(2)
             first = False
-        else: time.sleep(0.08)
+        else:
+            time.sleep(0.08)
         # title = x.find("a", id="video-title")
         title = x.find_element(By.XPATH, ".//a[@id='video-title']")
         print(title.text.strip())
@@ -363,7 +365,14 @@ def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, vide
     else:
         commentID = href
 
-    avatar = comment.find_element(By.XPATH, ".//yt-img-shadow[contains(@class, 'style-scope ytd-comment-view-model no-transition')]")
+    # crsr.execute("SELECT * FROM comment WHERE videoID=?", (videoID,))
+    # rows = crsr.fetchall()
+    # if len(rows) == 1:
+    #     print("retrun false")
+    #     return False
+
+    avatar = comment.find_element(By.XPATH,
+                                  ".//yt-img-shadow[contains(@class, 'style-scope ytd-comment-view-model no-transition')]")
     avatar_foot = avatar.find_element(By.XPATH,
                                       ".//img[contains(@id, 'img') and contains(@class, 'style-scope yt-img-shadow')]")
     avatar_url = avatar_foot.get_attribute("src")
@@ -409,11 +418,12 @@ def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, vide
     inner_html = creator_heart_div.get_attribute("innerHTML").strip()
     creator_heart = False
     if inner_html: creator_heart = True
-    print(commentID, parentID, comment_text, handle, comment_likes, creator_heart)
+    print(f"Saving comment: {commentID}")
     crsr.execute(
         "INSERT OR REPLACE INTO comment (commentID, parentID, videochannelID, videoID, text, user_handle, date, avatar, likes, "
         "creator_heart) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (commentID, parentID, videoChannelID, videoID, comment_text, handle, date, avatar_url, comment_likes, creator_heart))
+        (commentID, parentID, videoChannelID, videoID, comment_text, handle, date, avatar_url, comment_likes,
+         creator_heart))
     conn.commit()
     return commentID
 
@@ -461,112 +471,229 @@ def comment_parser(driver, video_link):
     driver.get(video_link)
     driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
 
+    def wait_for_element(xpath: str, in_element=None):
+        while True:
+            try:
+                if in_element is None:
+                    el = driver.find_element(By.XPATH, xpath)
+                    if el is not None: return el
+                else:
+                    el = in_element.find_element(By.XPATH, xpath)
+                    if el is not None: return el
+            except Exception as e:
+                print(f"Exception: {e}")
+
+    suggested_videos = wait_for_element("//div[@id='secondary-inner' and @class='style-scope ytd-watch-flexy']")
+
     prev_height = driver.execute_script("return document.documentElement.scrollHeight")  # Initial page height
     last_check_time = time.time()
     time.sleep(3)
-    video_block = driver.find_element(By.XPATH, "//div[@id='player']")
+    video_block = wait_for_element("//div[@id='player']")
+    # video_block = driver.find_element(By.XPATH, "//div[@id='player']")
     driver.execute_script("arguments[0].remove();", video_block)
-    time.sleep(3)
-    try:
-        sort_by_box = driver.find_element(By.CSS_SELECTOR,
-                                          "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > div:nth-child(1) > tp-yt-paper-button:nth-child(1)")
-    except selenium.common.exceptions.NoSuchElementException:
-        time.sleep(5)
+    #time.sleep(3)
+    sort_by_box = wait_for_element(
+        "//tp-yt-paper-button[contains(@id, 'label') and contains(@class, 'dropdown-trigger style-scope yt-dropdown-menu')]")
 
-        sort_by_box = driver.find_element(By.CSS_SELECTOR,
-                                          "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > div:nth-child(1) > tp-yt-paper-button:nth-child(1)")
-
-    suggested_videos = driver.find_element(By.XPATH, "//div[@id='secondary-inner' and @class='style-scope "
-                                                     "ytd-watch-flexy']")
+    # try:
+    #     sort_by_box = driver.find_element(By.CSS_SELECTOR,
+    #                                       "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > div:nth-child(1) > tp-yt-paper-button:nth-child(1)")
+    # except selenium.common.exceptions.NoSuchElementException:
+    #     time.sleep(5)
+    #
+    #     sort_by_box = driver.find_element(By.CSS_SELECTOR,
+    #                                       "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > div:nth-child(1) > tp-yt-paper-button:nth-child(1)")
+    # suggested_videos = driver.find_element(By.XPATH, "//div[@id='secondary-inner' and @class='style-scope "
+    #                                                  "ytd-watch-flexy']")
 
     scroll_and_click(driver, sort_by_box)
-    time.sleep(3)
-    sort_by_new_option = driver.find_element(By.CSS_SELECTOR, "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > tp-yt-iron-dropdown:nth-child(2) > div:nth-child(1) > div:nth-child(1) > tp-yt-paper-listbox:nth-child(1) > a:nth-child(2) > tp-yt-paper-item:nth-child(1)")
+    # time.sleep(3)
+    # sort_by_new_option = wait_for_element(".//a[contains(@class, 'yt-simple-endpoint style-scope yt-dropdown-menu') and not(contains(@class, 'iron-selected'))]", sort_by_box)
+    time.sleep(1)
+    sort_by_new_option = driver.find_element(By.CSS_SELECTOR,
+                                            "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > tp-yt-iron-dropdown:nth-child(2) > div:nth-child(1) > div:nth-child(1) > tp-yt-paper-listbox:nth-child(1) > a:nth-child(2) > tp-yt-paper-item:nth-child(1)")
     scroll_and_click(driver, sort_by_new_option)
-    time.sleep(3)
+    time.sleep(0.5)
     driver.execute_script("arguments[0].remove();", suggested_videos)
+
+    def spinnerwait():
+        time.sleep(0.09)
+        while True:
+            # spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner[@id='spinner']")
+            spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner[@id='spinner']")
+            visible_spinners = []
+
+            for spinner in spinners:
+                try:
+                    aria_hidden = spinner.get_attribute("aria-hidden")
+                    aria_label = spinner.get_attribute("aria-label")
+                except StaleElementReferenceException:
+                    continue
+
+                if aria_hidden == "true" or aria_label == "loading": continue
+
+                visible_spinners.append(spinner)
+            for x in visible_spinners:
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center'});",
+                    x
+                )
+            # print(spinners[0].get_attribute('outerHTML'))
+            print(f"waiting on spinners {len(spinners)} {len(visible_spinners)}")
+            if len(visible_spinners) == 0: break
+
+    def process_buttons(buttons: list):
+        good_buttons = []
+        for button in buttons:
+            if not button.is_displayed(): continue
+            good_buttons.append(button)
+            # print(button.get_attribute('outerHTML'))
+            scroll_and_click(driver=driver, el=button)
+            driver.execute_script("arguments[0].remove();", button)
+        return good_buttons
+
+    def do_comment_buttons(comment):
+        thread_buttons = []
+        expand_buttons = comment.find_elements(By.XPATH,
+                                               ".//ytd-button-renderer[@id='more-replies-sub-thread']")
+        thread_buttons.extend(process_buttons(expand_buttons))
+
+        more_expand_buttons = comment.find_elements(By.CSS_SELECTOR,
+                                                    "ytd-continuation-item-renderer.replies-continuation button[aria-label='Show more replies']")
+        thread_buttons.extend(process_buttons(more_expand_buttons))
+        renders = comment.find_elements(By.XPATH,
+                                        ".//ytd-continuation-item-renderer[not(contains(@class, 'replies-continuation style-scope ytd-comment-replies-renderer')) and not(contains(@aria-label, 'Show more replies'))]")
+        for x in renders:
+            if not x.is_displayed(): renders.remove(x)
+        for x in thread_buttons:
+            try:
+                if not x.is_displayed() or not x.is_enabled(): thread_buttons.remove(x)
+            except StaleElementReferenceException:
+                thread_buttons.remove(x)
+        print(f"renders: {len(renders)} {len(thread_buttons)}")
+        return len(thread_buttons) + len(renders)
+
+    def process_comments(comment):
+        inner_comments = comment.find_elements(By.XPATH,
+                                               ".//div[@id='body' and contains(@class, 'style-scope ytd-comment-view-model')]")
+        rows = []
+        print(f"inner comments: {len(inner_comments)}")
+        if len(inner_comments) > 0:
+            main_comment = inner_comments[0]
+            curr_comment = main_comment.find_element(By.XPATH, ".//span[contains(@id, 'published-time-text')]")
+            curre_comment = curr_comment.find_element(By.XPATH,
+                                                      ".//a[contains(@class, 'yt-simple-endpoint style-scope "
+                                                      "ytd-comment-view-model')]")
+            href = curre_comment.get_attribute('href')
+
+            if not href:
+                print(comment)
+                print("No href orrrr date in comment?")
+                quit()
+            if "lc=" not in href:
+                print("Weird comment href")
+                print(href)
+                quit()
+
+            trash, href = href.rsplit("lc=", 1)
+            if "&pp=" in href:
+                href, trash = href.rsplit("&pp=", 1)
+            if "." in href:
+                parentID, commentID = href.rsplit(".", 1)
+            else:
+                commentID = href
+            crsr.execute("SELECT * FROM comment WHERE commentID=?", (commentID,))
+            rows = crsr.fetchall()
+            # except Exception as e:
+            #     print(len(inner_comments))
+            #     print(e)
+        if len(rows) >= 1:
+            driver.execute_script("arguments[0].remove();", comment)
+            print(f"Comment thread already saved, moving on. {len(rows)} rows")
+            return 314159265389
+        good_comments = []
+        for sub_comment in inner_comments:
+            if not sub_comment.is_displayed(): continue
+            good_comments.append(sub_comment)
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});",
+                sub_comment
+            )
+            result = parse_comment(sub_comment, videoID)
+
+            driver.execute_script("arguments[0].remove();", sub_comment)
+        return len(good_comments)
+
+    comment_container = driver.find_element(By.XPATH,
+                                            "//div[contains(@id, 'contents') and contains(@class, 'style-scope ytd-item-section-renderer style-scope ytd-item-section-renderer')]")
+
+    parsed_comments = 0
+    none_in_a_row = 0
+
     while True:
+        try:
+            comment_thread = driver.find_element(By.XPATH,
+                                                 "//ytd-comment-thread-renderer[contains(@class, 'style-scope ytd-item-section-renderer')]")
+        except NoSuchElementException:
+            comment_thread = None
 
-        def spinnerwait():
+        if comment_thread:
+
+            comment_count = 0
+            in_a_row = 0
             while True:
-                time.sleep(1)
-                # spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner[@id='spinner']")
-                spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner[@id='spinner']")
-                visible_spinners = []
 
-                for spinner in spinners:
-                    try:
-                        aria_hidden = spinner.get_attribute("aria-hidden")
-                        aria_label = spinner.get_attribute("aria-label")
-                    except StaleElementReferenceException:
-                        continue
+                button_count = do_comment_buttons(comment_thread)
+                comment_count = process_comments(comment_thread)
 
-                    if aria_hidden == "true" or aria_label == "loading": continue
+                if comment_count == 314159265389: break
 
-                    visible_spinners.append(spinner)
+                # print(f"button count: {button_count}  comment count:{comment_count}")
 
-                # print(spinners[0].get_attribute('outerHTML'))
-                print(f"waiting on spinners {len(spinners)}")
-                if len(visible_spinners) == 0: break
+                if button_count < 1 and comment_count < 1:
 
-        e_button_count = 1
-        m_button_count = 1
+                    if in_a_row >= 3:
+                        break
 
-        spinnerwait()
+                    in_a_row += 1
 
-        def process_buttons(buttons: list):
-            good_buttons = []
-            for button in buttons:
-                if not button.is_displayed(): continue
-                good_buttons.append(button)
-                # print(button.get_attribute('outerHTML'))
-                scroll_and_click(driver=driver, el=button)
-                driver.execute_script("arguments[0].remove();", button)
-            return good_buttons
+                else: in_a_row = 0
 
-        # Loading comment replies loop
-        while e_button_count > 0 or m_button_count > 0:
-            expand_buttons = driver.find_elements(By.XPATH, "//ytd-button-renderer[@id='more-replies-sub-thread']")
-            actual_expand_buttons = process_buttons(expand_buttons)
-
-            # expand the comment replies button
-            # ytd-button-renderer
-            more_expand_buttons = driver.find_elements(By.CSS_SELECTOR,
-                                                       "ytd-continuation-item-renderer.replies-continuation button[aria-label='Show more replies']")
-            actual_more_expand_buttons = process_buttons(more_expand_buttons)
-
-            e_button_count = len(actual_expand_buttons)
-            m_button_count = len(actual_more_expand_buttons)
-
-            if e_button_count != 0 or m_button_count != 0:
                 spinnerwait()
 
-        # Scroll down continuously
-        driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
-        print("Scrolling down.")
-        spinnerwait()
+            none_in_a_row = 0
 
-        # Check every 60 seconds if page height has increased
-        if e_button_count == 0 and m_button_count == 0: print("No extra comment buttons found")
-        if time.time() - last_check_time >= 15:
-            new_height = driver.execute_script("return document.documentElement.scrollHeight")
-            print(f"{new_height} != {prev_height} and {e_button_count} != 0 and {m_button_count}")
-            if (new_height > prev_height) or (e_button_count != 0 and m_button_count != 0):
-                prev_height = new_height  # Update stored height
+            if comment_count != 314159265389:
+                driver.execute_script("arguments[0].remove();", comment_thread)
+                parsed_comments = 1
             else:
-                # print(f"{new_height} {prev_height}")
-                break
-            last_check_time = time.time()
+                parsed_comments = comment_count
 
-    comments = driver.find_elements(By.XPATH,
-                                    "//div[@id='body' and contains(@class, 'style-scope ytd-comment-view-model')]")
-    print(f"Found {len(comments)} comments")
-    comment_ids = set()
-    for x in comments:
-        result = parse_comment(x, videoID)
-        if result: comment_ids.add(result)
+            try:
+                first_element = comment_container.find_element(By.XPATH, "./*[1]")
+                child_elements = comment_container.find_elements(By.XPATH, "./*")
+                if first_element and len(child_elements) > 2:
+                    if first_element.tag_name == "ytd-continuation-item-renderer":
+                        driver.execute_script("arguments[0].remove();", first_element)
+            except Exception as e:
+                print(e)
 
-    print(f"Better estimate of comments: {len(comment_ids)}")
+            continuation_renderers = comment_container.find_elements(By.XPATH, "./ytd-continuation-item-renderer")
+
+            if len(continuation_renderers) > 1:
+                driver.execute_script("arguments[0].remove();", continuation_renderers[0])
+        else:
+
+            if parsed_comments == 0:
+                none_in_a_row += 1
+            else:
+                parsed_comments = 0
+                time.sleep(1)
+
+            driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
+            spinnerwait()
+            if none_in_a_row > 4: break
+
     crsr.execute("UPDATE video SET scraped = 1 - scraped WHERE videoID = ?", (videoID,))
     conn.commit()
 
@@ -598,6 +725,7 @@ def video_parser(driver, video_link, channelID: str = None, comments: bool = Fal
                                                        "'ytd-text-inline-expander')]")
     description_button.click()
     time.sleep(1)
+
     try:
         open_transcript_button = driver.find_element(By.XPATH, "/html/body/ytd-app/div["
                                                                "1]/ytd-page-manager/ytd-watch-flexy/div[5]/div["
@@ -607,6 +735,7 @@ def video_parser(driver, video_link, channelID: str = None, comments: bool = Fal
                                                                "3]/ytd-video-description-transcript-section-renderer/div["
                                                                "3]/div/ytd-button-renderer/yt-button-shape/button")
         open_transcript_button.click()
+
     except Exception as e:
         print(f"Failed on/no transcript for {videoID}")
         crsr.execute("UPDATE video SET scraped = 1 WHERE videoID =?;", (videoID,))
