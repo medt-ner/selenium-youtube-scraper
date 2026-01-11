@@ -17,7 +17,7 @@ from urllib.parse import urlparse, parse_qs
 ff_options = Options()
 ff_options.set_preference("gfx.webrender.all", False)
 ff_options.set_preference("media.autoplay.default", 5)
-# ff_options.page_load_strategy = 'eager'
+ff_options.page_load_strategy = 'normal'
 # ff_options.add_argument('--headless')
 
 driver1 = webdriver.Firefox(options=ff_options)
@@ -158,7 +158,6 @@ def channel_video_type_parser(driver, channel_link, ctype):
                                                              "'youtube'))]")
         video_count = video_count.text.replace(",", "").strip()
         print(f"This channel has {video_count}.")
-        video_count, trash = video_count.split(" ", 1)
 
         print(f"Channel id: {channel_id}")
         try:
@@ -386,6 +385,8 @@ def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, vide
             trash, handle = href.rsplit("/@")
         elif "/user/" in href:
             trash, handle = href.rsplit("user/")
+        elif "/c/" in href:
+            trash, handle = href.rsplit("/c/")
         else:
             trash, handle = href.rsplit("channel/", 1)
     except Exception as e:
@@ -491,7 +492,7 @@ def comment_parser(driver, video_link):
     video_block = wait_for_element("//div[@id='player']")
     # video_block = driver.find_element(By.XPATH, "//div[@id='player']")
     driver.execute_script("arguments[0].remove();", video_block)
-    #time.sleep(3)
+    # time.sleep(3)
     sort_by_box = wait_for_element(
         "//tp-yt-paper-button[contains(@id, 'label') and contains(@class, 'dropdown-trigger style-scope yt-dropdown-menu')]")
 
@@ -511,10 +512,16 @@ def comment_parser(driver, video_link):
     # sort_by_new_option = wait_for_element(".//a[contains(@class, 'yt-simple-endpoint style-scope yt-dropdown-menu') and not(contains(@class, 'iron-selected'))]", sort_by_box)
     time.sleep(1)
     sort_by_new_option = driver.find_element(By.CSS_SELECTOR,
-                                            "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > tp-yt-iron-dropdown:nth-child(2) > div:nth-child(1) > div:nth-child(1) > tp-yt-paper-listbox:nth-child(1) > a:nth-child(2) > tp-yt-paper-item:nth-child(1)")
+                                             "yt-sort-filter-sub-menu-renderer.ytd-comments-header-renderer > yt-dropdown-menu:nth-child(2) > tp-yt-paper-menu-button:nth-child(1) > tp-yt-iron-dropdown:nth-child(2) > div:nth-child(1) > div:nth-child(1) > tp-yt-paper-listbox:nth-child(1) > a:nth-child(2) > tp-yt-paper-item:nth-child(1)")
     scroll_and_click(driver, sort_by_new_option)
     time.sleep(0.5)
-    driver.execute_script("arguments[0].remove();", suggested_videos)
+    try:
+        driver.execute_script("arguments[0].remove();", suggested_videos)
+    except Exception as e:
+        print(f"Exception: {e}")
+        suggested_videos = wait_for_element("//div[@id='secondary-inner' and @class='style-scope ytd-watch-flexy']")
+        driver.execute_script("arguments[0].remove();", suggested_videos)
+    total_comments = 0
 
     def spinnerwait():
         time.sleep(0.09)
@@ -565,12 +572,12 @@ def comment_parser(driver, video_link):
                                         ".//ytd-continuation-item-renderer[not(contains(@class, 'replies-continuation style-scope ytd-comment-replies-renderer')) and not(contains(@aria-label, 'Show more replies'))]")
         for x in renders:
             if not x.is_displayed(): renders.remove(x)
-        for x in thread_buttons:
-            try:
-                if not x.is_displayed() or not x.is_enabled(): thread_buttons.remove(x)
-            except StaleElementReferenceException:
-                thread_buttons.remove(x)
-        print(f"renders: {len(renders)} {len(thread_buttons)}")
+        # for x in thread_buttons:
+        #     try:
+        #         if not x.is_displayed() or not x.is_enabled(): thread_buttons.remove(x)
+        #     except StaleElementReferenceException:
+        #         thread_buttons.remove(x)
+        print(f"renders: {len(renders)} {len(thread_buttons)}. Non-processed buttons: {len(expand_buttons)} {len(more_expand_buttons)}")
         return len(thread_buttons) + len(renders)
 
     def process_comments(comment):
@@ -641,14 +648,19 @@ def comment_parser(driver, video_link):
 
             comment_count = 0
             in_a_row = 0
+            initial_parse = True
             while True:
 
                 button_count = do_comment_buttons(comment_thread)
                 comment_count = process_comments(comment_thread)
 
                 if comment_count == 314159265389: break
-
+                total_comments += comment_count
                 # print(f"button count: {button_count}  comment count:{comment_count}")
+
+                if initial_parse and button_count == 0:
+                    print("No buttons")
+                    break
 
                 if button_count < 1 and comment_count < 1:
 
@@ -656,9 +668,9 @@ def comment_parser(driver, video_link):
                         break
 
                     in_a_row += 1
-
-                else: in_a_row = 0
-
+                else:
+                    in_a_row = 0
+                initial_parse = False
                 spinnerwait()
 
             none_in_a_row = 0
@@ -693,9 +705,10 @@ def comment_parser(driver, video_link):
             driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
             spinnerwait()
             if none_in_a_row > 4: break
-
+    print(f"Done parsing {total_comments} comments")
     crsr.execute("UPDATE video SET scraped = 1 - scraped WHERE videoID = ?", (videoID,))
     conn.commit()
+    driver.close()
 
 
 def video_parser(driver, video_link, channelID: str = None, comments: bool = False):
