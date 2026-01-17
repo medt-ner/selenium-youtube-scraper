@@ -7,17 +7,29 @@ import logging
 import selenium.webdriver.remote.webelement
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.common import StaleElementReferenceException, NoSuchElementException
+from selenium.common import StaleElementReferenceException, NoSuchElementException, ElementNotVisibleException
 from selenium.webdriver.common.by import By
 
 from selenium.webdriver.firefox.options import Options
+from selenium.webdriver import FirefoxProfile
 
 from urllib.parse import urlparse, parse_qs
+
+profile = FirefoxProfile()
+
+profile.set_preference("browser.cache.disk.enable", False)
+profile.set_preference("browser.cache.memory.enable", False)
+profile.set_preference("browser.cache.offline.enable", False)
+
 
 ff_options = Options()
 ff_options.set_preference("gfx.webrender.all", False)
 ff_options.set_preference("media.autoplay.default", 5)
+ff_options.set_preference("image.decode-immediately.enabled", True)
+ff_options.set_preference("image.mem.decode_bytes_at_a_time", 32768)
 ff_options.page_load_strategy = 'normal'
+ff_options.set_preference("image.cache.size", 0)
+ff_options.profile = profile
 # ff_options.add_argument('--headless')
 
 driver1 = webdriver.Firefox(options=ff_options)
@@ -89,6 +101,19 @@ def setup_logging(verbose: bool) -> None:
     logging.basicConfig(level=level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 
+def is_live(driver, element: selenium.webdriver.remote.webelement.WebElement) -> bool:
+    """
+    Checks if a Selenium web element is alive.
+    :param driver: Selenium webdriver
+    :param element: Selenium Web Element to check for liveliness on the current page.
+    :return: Boolean value as to where the element is live.
+    """
+    try:
+        return driver.execute_script("return arguments[0].isConnected === true", element)
+    except StaleElementReferenceException:
+        return False
+
+
 def scroll_and_click(driver, el):
     """
     Scrolls driver to the element 'el' and clicks on it.
@@ -116,6 +141,43 @@ def get_video_id(video_link):
     else:
         unimportant, vid_id = video_link.split("ch?v=", 1)
     return vid_id
+
+
+def get_comment_id(comment: selenium.webdriver.remote.webelement.WebElement) -> str:
+    """
+    Gets the comment ID for a comment element.
+    :param comment: Selenium web element
+    :return: String; the comment ID. Returns \"\" on an exception.
+    """
+    try:
+        curr_comment = comment.find_element(By.XPATH, ".//span[contains(@id, 'published-time-text')]")
+        curre_comment = curr_comment.find_element(By.XPATH,
+                                                  ".//a[contains(@class, 'yt-simple-endpoint style-scope "
+                                                  "ytd-comment-view-model')]")
+        href = curre_comment.get_attribute('href')
+        date = curre_comment.text
+
+        if not date or not href:
+            print(comment)
+            print("No href or date in comment?")
+            quit()
+        if "lc=" not in href:
+            print("Weird comment href")
+            print(href)
+            quit()
+
+        trash, href = href.rsplit("lc=", 1)
+        if "&pp=" in href:
+            href, trash = href.rsplit("&pp=", 1)
+        parentID = None
+        if "." in href:
+            parentID, commentID = href.rsplit(".", 1)
+        else:
+            commentID = href
+        return commentID
+    except Exception as e:
+        print(f"Failed to get comment href: {e}")
+        return ""
 
 
 def channel_parser(driver, channel_link):
@@ -364,12 +426,6 @@ def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, vide
     else:
         commentID = href
 
-    # crsr.execute("SELECT * FROM comment WHERE videoID=?", (videoID,))
-    # rows = crsr.fetchall()
-    # if len(rows) == 1:
-    #     print("retrun false")
-    #     return False
-
     avatar = comment.find_element(By.XPATH,
                                   ".//yt-img-shadow[contains(@class, 'style-scope ytd-comment-view-model no-transition')]")
     avatar_foot = avatar.find_element(By.XPATH,
@@ -396,7 +452,7 @@ def parse_comment(comment: selenium.webdriver.remote.webelement.WebElement, vide
     # Locating comment text
     curr_comment = comment.find_element(By.XPATH, ".//span[contains(@class, 'yt-core-attributed-string "
                                                   "yt-core-attributed-string--white-space-pre-wrap')]")
-    comment_text = curr_comment.text
+    comment_text = curr_comment.get_attribute("innerHTML").strip()
 
     # Locating comment likes
     curr_comment = comment.find_element(By.XPATH, ".//span[contains(@id, 'vote-count-middle') and contains(@class, "
@@ -481,6 +537,8 @@ def comment_parser(driver, video_link):
                 else:
                     el = in_element.find_element(By.XPATH, xpath)
                     if el is not None: return el
+            except NoSuchElementException:
+                pass
             except Exception as e:
                 print(f"Exception: {e}")
 
@@ -526,7 +584,6 @@ def comment_parser(driver, video_link):
     def spinnerwait():
         time.sleep(0.09)
         while True:
-            # spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner[@id='spinner']")
             spinners = driver.find_elements(By.XPATH, "//tp-yt-paper-spinner[@id='spinner']")
             visible_spinners = []
 
@@ -545,46 +602,77 @@ def comment_parser(driver, video_link):
                     "arguments[0].scrollIntoView({block:'center'});",
                     x
                 )
-            # print(spinners[0].get_attribute('outerHTML'))
-            print(f"waiting on spinners {len(spinners)} {len(visible_spinners)}")
+            print(f"Waiting on spinners {len(spinners)} {len(visible_spinners)}")
             if len(visible_spinners) == 0: break
 
-    def process_buttons(buttons: list):
+    def process_buttons(comment, buttons: list, comment_set: set):
         good_buttons = []
+        if comment_set:
+            safe_comments = comment_set.copy()
+        else: safe_comments = set()
         for button in buttons:
+            if not is_live(driver, button): continue
             if not button.is_displayed(): continue
             good_buttons.append(button)
-            # print(button.get_attribute('outerHTML'))
             scroll_and_click(driver=driver, el=button)
             driver.execute_script("arguments[0].remove();", button)
-        return good_buttons
+            spinnerwait()
+            comments, safe_comments = process_comments(comment, safe_comments)
+        return good_buttons, safe_comments
 
-    def do_comment_buttons(comment):
+    def is_comment_safe(comment: selenium.webdriver.remote.webelement.WebElement) -> bool:
+        third_ancestor = comment.find_element(By.XPATH, "ancestor::*[3]")
+
+        # First, check if there is a visible replies div
+        # The replies div is in both comments with and without replies, just not displayed for those without
+        try:
+            replies_element = third_ancestor.find_element(By.XPATH, "./div[contains(@id, 'replies')]")
+            if replies_element.is_displayed(): return True
+        except StaleElementReferenceException:
+            pass
+        except ElementNotVisibleException:
+            pass
+        except Exception as exception:
+            print(exception)
+
+        # Second, check if there are inner comments loaded
+        try:
+            inner_comments = third_ancestor.find_elements(By.XPATH,
+                                                    ".//div[@id='body' and contains(@class, 'style-scope ytd-comment-view-model')]")
+            for com in inner_comments:
+                if not com.is_displayed(): inner_comments.remove(com)
+            if len(inner_comments) > 1: return True
+        except StaleElementReferenceException:
+            pass
+        except ElementNotVisibleException:
+            pass
+        except Exception as exception:
+            print(exception)
+
+        # Safe in this case means that the comment is safe from complete deletion
+        # so returning false means that the comment is good to be fully removed
+        return False
+
+
+    def do_comment_buttons(comment, comment_set: set = None):
         thread_buttons = []
-        expand_buttons = comment.find_elements(By.XPATH,
-                                               ".//ytd-button-renderer[@id='more-replies-sub-thread']")
-        thread_buttons.extend(process_buttons(expand_buttons))
 
-        more_expand_buttons = comment.find_elements(By.CSS_SELECTOR,
-                                                    "ytd-continuation-item-renderer.replies-continuation button[aria-label='Show more replies']")
-        thread_buttons.extend(process_buttons(more_expand_buttons))
-        renders = comment.find_elements(By.XPATH,
-                                        ".//ytd-continuation-item-renderer[not(contains(@class, 'replies-continuation style-scope ytd-comment-replies-renderer')) and not(contains(@aria-label, 'Show more replies'))]")
-        for x in renders:
-            if not x.is_displayed(): renders.remove(x)
-        # for x in thread_buttons:
-        #     try:
-        #         if not x.is_displayed() or not x.is_enabled(): thread_buttons.remove(x)
-        #     except StaleElementReferenceException:
-        #         thread_buttons.remove(x)
-        print(f"renders: {len(renders)} {len(thread_buttons)}. Non-processed buttons: {len(expand_buttons)} {len(more_expand_buttons)}")
-        return len(thread_buttons) + len(renders)
+        if comment_set:
+            safe_comments = comment_set.copy()
+        else: safe_comments = set()
 
-    def process_comments(comment):
         inner_comments = comment.find_elements(By.XPATH,
-                                               ".//div[@id='body' and contains(@class, 'style-scope ytd-comment-view-model')]")
+                                                      ".//div[@id='body' and contains(@class, 'style-scope ytd-comment-view-model')]")
+        # Should encompass all applicable comments.
+        for x in inner_comments:
+            if not x.is_displayed(): continue
+            comment_id = get_comment_id(x)
+            if comment_id in safe_comments: continue
+            if not is_comment_safe(x): continue
+            safe_comments.add(comment_id)
+
         rows = []
-        print(f"inner comments: {len(inner_comments)}")
+
         if len(inner_comments) > 0:
             main_comment = inner_comments[0]
             curr_comment = main_comment.find_element(By.XPATH, ".//span[contains(@id, 'published-time-text')]")
@@ -592,10 +680,9 @@ def comment_parser(driver, video_link):
                                                       ".//a[contains(@class, 'yt-simple-endpoint style-scope "
                                                       "ytd-comment-view-model')]")
             href = curre_comment.get_attribute('href')
-
             if not href:
                 print(comment)
-                print("No href orrrr date in comment?")
+                print("No href or date in comment?")
                 quit()
             if "lc=" not in href:
                 print("Weird comment href")
@@ -611,16 +698,106 @@ def comment_parser(driver, video_link):
                 commentID = href
             crsr.execute("SELECT * FROM comment WHERE commentID=?", (commentID,))
             rows = crsr.fetchall()
+
+            # Deletion of thread lines, seems pointless
+            # threadlines = comment.find_elements(By.XPATH, ".//div[contains(@class, 'ytSubThreadThreadline')]")
+            # for thread in threadlines: driver.execute_script("arguments[0].remove();", thread)
             # except Exception as e:
             #     print(len(inner_comments))
             #     print(e)
+
+        if len(rows) >= 1:
+            driver.execute_script("arguments[0].remove();", comment)
+            print(f"Comment thread already saved, moving on.. {len(rows)} rows")
+            return 314159265389, safe_comments
+
+        expand_buttons = comment.find_elements(By.XPATH,
+                                               ".//ytd-button-renderer[@id='more-replies-sub-thread']")
+        good_buttons, safe_comments = process_buttons(comment, expand_buttons, comment_set)
+        thread_buttons.extend(good_buttons)
+        if not is_live(driver, comment): return len(thread_buttons), safe_comments
+        more_expand_buttons = comment.find_elements(By.CSS_SELECTOR,
+                                                    "ytd-continuation-item-renderer.replies-continuation button[aria-label='Show more replies']")
+
+        good_buttons, safe_comments = process_buttons(comment, more_expand_buttons, comment_set)
+        thread_buttons.extend(good_buttons)
+        if not is_live(driver, comment): return len(thread_buttons), safe_comments
+        renders = comment.find_elements(By.XPATH,
+                                        ".//ytd-continuation-item-renderer[not(contains(@class, 'replies-continuation style-scope ytd-comment-replies-renderer')) and not(contains(@aria-label, 'Show more replies'))]")
+        for x in renders:
+            if not x.is_displayed(): renders.remove(x)
+        # for x in thread_buttons:
+        #     try:
+        #         if not x.is_displayed() or not x.is_enabled(): thread_buttons.remove(x)
+        #     except StaleElementReferenceException:
+        #         thread_buttons.remove(x)
+        print(
+            f"renders: {len(renders)} {len(thread_buttons)}. Non-processed buttons: {len(expand_buttons)} {len(more_expand_buttons)}")
+        return len(thread_buttons) + len(renders), safe_comments
+
+    def process_comments(comment, comment_set: set = None):
+        inner_comments = comment.find_elements(By.XPATH,
+                                               ".//div[@id='body' and contains(@class, 'style-scope ytd-comment-view-model')]")
+        rows = []
+
+        if comment_set:
+            safe_comments = comment_set.copy()
+        else: safe_comments = set()
+
+        # Should encompass all applicable comments.
+        for x in inner_comments:
+            if not x.is_displayed(): continue
+            comment_id = get_comment_id(x)
+            if comment_id in safe_comments: continue
+            if not is_comment_safe(x): continue
+            safe_comments.add(comment_id)
+
+        print(f"inner comments: {len(inner_comments)}")
+        if len(inner_comments) > 0:
+            main_comment = inner_comments[0]
+            curr_comment = main_comment.find_element(By.XPATH, ".//span[contains(@id, 'published-time-text')]")
+            curre_comment = curr_comment.find_element(By.XPATH,
+                                                      ".//a[contains(@class, 'yt-simple-endpoint style-scope "
+                                                      "ytd-comment-view-model')]")
+            href = curre_comment.get_attribute('href')
+            if not href:
+                print(comment)
+                print("No href or date in comment?")
+                quit()
+            if "lc=" not in href:
+                print("Weird comment href")
+                print(href)
+                quit()
+
+            trash, href = href.rsplit("lc=", 1)
+            if "&pp=" in href:
+                href, trash = href.rsplit("&pp=", 1)
+            if "." in href:
+                parentID, commentID = href.rsplit(".", 1)
+            else:
+                commentID = href
+            crsr.execute("SELECT * FROM comment WHERE commentID=?", (commentID,))
+            rows = crsr.fetchall()
+            # threadlines = comment.find_elements(By.XPATH, ".//div[contains(@class, 'ytSubThreadThreadline')]")
+            # for thread in threadlines: driver.execute_script("arguments[0].remove();", thread)
+            # except Exception as e:
+            #     print(len(inner_comments))
+            #     print(e)
+
         if len(rows) >= 1:
             driver.execute_script("arguments[0].remove();", comment)
             print(f"Comment thread already saved, moving on. {len(rows)} rows")
-            return 314159265389
+            return 314159265389, safe_comments
+
         good_comments = []
         for sub_comment in inner_comments:
-            if not sub_comment.is_displayed(): continue
+            if not is_live(driver, sub_comment): continue
+            try:
+                if not sub_comment.is_displayed(): continue
+            except Exception as e:
+                print(e)
+                print(len(inner_comments))
+                quit()
             good_comments.append(sub_comment)
             driver.execute_script(
                 "arguments[0].scrollIntoView({block:'center'});",
@@ -628,8 +805,25 @@ def comment_parser(driver, video_link):
             )
             result = parse_comment(sub_comment, videoID)
 
-            driver.execute_script("arguments[0].remove();", sub_comment)
-        return len(good_comments)
+            if result not in safe_comments:
+
+                third_ancestor = sub_comment.find_element(By.XPATH, "ancestor::*[3]")
+                fourth_ancestor = sub_comment.find_element(By.XPATH, "ancestor::*[4]")
+                fifth_ancestor = sub_comment.find_element(By.XPATH, "ancestor::*[5]")
+
+                print(
+                    f"Base deletion {third_ancestor.get_attribute('class')} {third_ancestor.tag_name} {fourth_ancestor.get_attribute('class')}")
+                if third_ancestor.tag_name == "ytd-comment-thread-renderer" and fourth_ancestor.id == "contents":
+                    print("Head comment base deletion")
+                    driver.execute_script("arguments[0].remove();", third_ancestor)
+                elif third_ancestor.tag_name == "ytd-comment-thread-renderer" and \
+                        fourth_ancestor.get_attribute("class") == "ytSubThreadSubThreadContent":
+                    print(f"Reply comment base deletion {fourth_ancestor.get_attribute('class')}")
+                    driver.execute_script("arguments[0].remove();", fifth_ancestor)
+
+            else: driver.execute_script("arguments[0].remove();", sub_comment)
+
+        return len(good_comments), safe_comments
 
     comment_container = driver.find_element(By.XPATH,
                                             "//div[contains(@id, 'contents') and contains(@class, 'style-scope ytd-item-section-renderer style-scope ytd-item-section-renderer')]")
@@ -649,12 +843,22 @@ def comment_parser(driver, video_link):
             comment_count = 0
             in_a_row = 0
             initial_parse = True
+
+            try:
+                ghost_comment_blocks = comment_container.find_elements(By.XPATH, "./ytd-ghost-comment-block")
+                if len(ghost_comment_blocks) > 1:
+                    driver.execute_script("arguments[0].remove();", ghost_comment_blocks[0])
+            except Exception as e:
+                print(e)
+
+            button_comments = set()
+
             while True:
 
-                button_count = do_comment_buttons(comment_thread)
-                comment_count = process_comments(comment_thread)
-
-                if comment_count == 314159265389: break
+                button_count, button_comments = do_comment_buttons(comment_thread, button_comments)
+                if button_comments == 314159265389 or not is_live(driver, comment_thread): break
+                comment_count, button_comments = process_comments(comment_thread, button_comments)
+                if comment_count == 314159265389 or not is_live(driver, comment_thread): break
                 total_comments += comment_count
                 # print(f"button count: {button_count}  comment count:{comment_count}")
 
@@ -664,7 +868,7 @@ def comment_parser(driver, video_link):
 
                 if button_count < 1 and comment_count < 1:
 
-                    if in_a_row >= 3:
+                    if in_a_row >= 1:
                         break
 
                     in_a_row += 1
@@ -675,13 +879,22 @@ def comment_parser(driver, video_link):
 
             none_in_a_row = 0
 
-            if comment_count != 314159265389:
-                driver.execute_script("arguments[0].remove();", comment_thread)
+            if comment_count != 314159265389 and button_count != 314159265389 and is_live(driver, comment_thread):
+                try:
+                    driver.execute_script("arguments[0].remove();", comment_thread)
+                except Exception as e:
+                    print(e)
+                    print(comment_count)
+                    print(f"Button comments: {len(button_comments)}")
+                    quit()
                 parsed_comments = 1
             else:
                 parsed_comments = comment_count
 
             try:
+                ghost_comment_blocks = comment_container.find_elements(By.XPATH, "./ytd-ghost-comment-block")
+                if len(ghost_comment_blocks) > 1:
+                    driver.execute_script("arguments[0].remove();", ghost_comment_blocks[0])
                 first_element = comment_container.find_element(By.XPATH, "./*[1]")
                 child_elements = comment_container.find_elements(By.XPATH, "./*")
                 if first_element and len(child_elements) > 2:
@@ -705,7 +918,7 @@ def comment_parser(driver, video_link):
             driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight)")
             spinnerwait()
             if none_in_a_row > 4: break
-    print(f"Done parsing {total_comments} comments")
+    print(f"Done parsing ~{total_comments} comments")
     crsr.execute("UPDATE video SET scraped = 1 - scraped WHERE videoID = ?", (videoID,))
     conn.commit()
     driver.close()
