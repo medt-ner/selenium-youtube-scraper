@@ -16,3 +16,7 @@ python main.py auto "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 - --headless: Changes whether the script opens a visible window or not.
 ### Current Database Schema
 <img width="719" height="756" alt="database schema" src="https://github.com/medt-ner/selenium-youtube-scraper/blob/main/dbSchema.png" />
+
+### Comment Saving
+The comment scraping tends to crash about 10,000 comments deep.
+The script slows down substantially. I believe that is due in part to clone comments being loaded, increasing the time it takes for replies to load.
